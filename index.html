@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Control Remoto WOF Technology</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 0; padding: 0;
+    background: #f5f5f5;
+    color: #333;
+  }
+  header {
+    background: #4CAF50;
+    color: white;
+    padding: 15px 20px;
+    text-align: center;
+  }
+  main {
+    max-width: 700px;
+    margin: 20px auto;
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+  }
+  button, input[type="submit"] {
+    background: #4CAF50;
+    border: none;
+    padding: 10px 18px;
+    color: white;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 1rem;
+    margin-top: 10px;
+  }
+  button:hover, input[type="submit"]:hover {
+    background: #45a049;
+  }
+  input[type="text"], input[type="password"], select {
+    width: 100%;
+    padding: 8px 10px;
+    margin: 8px 0;
+    box-sizing: border-box;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+  }
+  table, th, td {
+    border: 1px solid #ddd;
+  }
+  th, td {
+    padding: 10px;
+    text-align: left;
+  }
+  tr:nth-child(even) {background-color: #f9f9f9;}
+  .error {
+    color: #f44336;
+  }
+  .success {
+    color: green;
+  }
+  nav a {
+    margin: 0 10px;
+    color: white;
+    text-decoration: none;
+  }
+  nav a:hover {
+    text-decoration: underline;
+  }
+</style>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-database-compat.js"></script>
+
+</head>
+<body>
+
+<header>
+  <h1>Control Remoto WOF Technology</h1>
+  <nav id="navLinks"></nav>
+</header>
+
+<main id="content">
+  <!-- Aquí se cargará contenido dinámico -->
+</main>
+
+<script>
+// --- Configuración Firebase ---
+// Reemplaza con tu configuración real Firebase:
+const firebaseConfig = {
+  apiKey: "AIzaSyB4OFajtU-bKi7wuN5B1N_1x71hDo4nf8U",
+  authDomain: "alarmaswof.firebaseapp.com",
+  databaseURL: "https://alarmaswof-default-rtdb.firebaseio.com",
+  projectId: "alarmaswof",
+  storageBucket: "alarmaswof.appspot.com",
+  messagingSenderId: "tu-messaging-sender-id",
+  appId: "tu-app-id"
+};
+
+firebase.initializeApp(firebaseConfig);
+
+const auth = firebase.auth();
+const db = firebase.database();
+
+let currentUser = null;
+let transmisores = {};
+let salidaActiva = false;
+let ultimoNombre = "";
+let ultimaDireccion = "";
+
+// --------- Utilidades ---------
+function $(id) { return document.getElementById(id); }
+
+function showError(msg) {
+  const content = $("content");
+  content.innerHTML = `<p class="error">${msg}</p>`;
+}
+
+function showSuccess(msg) {
+  const content = $("content");
+  content.innerHTML = `<p class="success">${msg}</p>`;
+}
+
+function setNav() {
+  const nav = $("navLinks");
+  if (currentUser) {
+    nav.innerHTML = `
+      <a href="#" onclick="goTo('home')">Inicio</a> | 
+      <a href="#" onclick="goTo('admin')">Admin</a> | 
+      <a href="#" onclick="logout()">Cerrar sesión</a>
+    `;
+  } else {
+    nav.innerHTML = `<a href="#" onclick="goTo('home')">Inicio</a> | <a href="#" onclick="goTo('login')">Login Admin</a>`;
+  }
+}
+
+// --------- Navegación ---------
+function goTo(page, extra) {
+  window.history.pushState({}, page, `?page=${page}${extra ? extra : ''}`);
+  renderPage();
+}
+
+window.onpopstate = () => renderPage();
+
+function renderPage() {
+  const params = new URLSearchParams(window.location.search);
+  const page = params.get("page") || "home";
+
+  switch (page) {
+    case "login": renderLogin(); break;
+    case "admin": 
+      if (currentUser) renderAdmin();
+      else goTo("login");
+      break;
+    case "edit":
+      if (currentUser) renderEdit(params.get("id"));
+      else goTo("login");
+      break;
+    case "new":
+      if (currentUser) renderNew();
+      else goTo("login");
+      break;
+    default:
+      renderHome();
+  }
+}
+
+// --------- Renderizado Páginas ---------
+function renderHome() {
+  const content = $("content");
+
+  // Mostrar estado sistema + boton activar/desactivar con idWeb
+  let html = `
+    <h2>Estado del Sistema</h2>
+    <p><strong>Salida:</strong> <span id="estadoSalida">${salidaActiva ? "ACTIVADA" : "DESACTIVADA"}</span></p>
+    <p><strong>Último usuario:</strong> ${ultimoNombre ? ultimoNombre : "Ninguno"}</p>
+    <p><strong>Dirección:</strong> ${ultimaDireccion ? ultimaDireccion : "-"}</p>
+
+    <h3>Activar/Desactivar Salida</h3>
+    <form id="formActivar">
+      <label for="inputIdWeb">Ingrese su ID Web:</label>
+      <input type="text" id="inputIdWeb" required />
+      <input type="submit" value="Enviar" />
+    </form>
+
+    <div id="msgActivar"></div>
+  `;
+
+  content.innerHTML = html;
+
+  $("formActivar").onsubmit = e => {
+    e.preventDefault();
+    const idWeb = $("inputIdWeb").value.trim();
+    if (!idWeb) {
+      $("msgActivar").innerHTML = `<p class="error">Debe ingresar un ID Web.</p>`;
+      return;
+    }
+    activarSalida(idWeb);
+  };
+}
+
+function renderLogin() {
+  const content = $("content");
+  content.innerHTML = `
+    <h2>Login Administrador</h2>
+    <form id="loginForm">
+      <label for="email">Email:</label><br>
+      <input type="email" id="email" required><br><br>
+      <label for="password">Contraseña:</label><br>
+      <input type="password" id="password" required><br><br>
+      <input type="submit" value="Ingresar">
+    </form>
+    <div id="loginMsg"></div>
+  `;
+
+  $("loginForm").onsubmit = e => {
+    e.preventDefault();
+    login();
+  };
+}
+
+function renderAdmin() {
+  const content = $("content");
+
+  let html = `
+    <h2>Panel Administrador</h2>
+    <button onclick="goTo('new')">Agregar Transmisor</button>
+    <table>
+      <thead>
+        <tr><th>Nombre</th><th>Código</th><th>Dirección</th><th>ID Web</th><th>Acciones</th></tr>
+      </thead>
+      <tbody>
+  `;
+
+  for (const key in transmisores) {
+    const t = transmisores[key];
+    html += `<tr>
+      <td>${t.nombre}</td>
+      <td>${t.codigo}</td>
+      <td>${t.direccion}</td>
+      <td>${t.idWeb}</td>
+      <td>
+        <button onclick="goTo('edit', '&id=${encodeURIComponent(key)}')">Editar</button> 
+        <button onclick="borrarTransmisor('${key}')">Borrar</button>
+      </td>
+    </tr>`;
+  }
+  html += "</tbody></table>";
+
+  content.innerHTML = html;
+}
+
+function renderEdit(id) {
+  const content = $("content");
+  if (!id || !transmisores[id]) {
+    showError("Transmisor no encontrado");
+    return;
+  }
+  const t = transmisores[id];
+
+  content.innerHTML = `
+    <h2>Editar Transmisor</h2>
+    <form id="editForm">
+      <label>Nombre:</label>
+      <input type="text" id="nombre" value="${t.nombre}" required />
+      <label>Código:</label>
+      <input type="text" id="codigo" value="${t.codigo}" required />
+      <label>Dirección:</label>
+      <input type="text" id="direccion" value="${t.direccion}" required />
+      <label>ID Web:</label>
+      <input type="text" id="idWeb" value="${t.idWeb}" />
+      <input type="submit" value="Guardar Cambios" />
+    </form>
+    <button onclick="goTo('admin')">Cancelar</button>
+    <div id="editMsg"></div>
+  `;
+
+  $("editForm").onsubmit = e => {
+    e.preventDefault();
+    guardarEdicion(id);
+  };
+}
+
+function renderNew() {
+  const content = $("content");
+  content.innerHTML = `
+    <h2>Agregar Nuevo Transmisor</h2>
+    <form id="newForm">
+      <label>Nombre:</label>
+      <input type="text" id="nombre" required />
+      <label>Código:</label>
+      <input type="text" id="codigo" required />
+      <label>Dirección:</label>
+      <input type="text" id="direccion" required />
+      <label>ID Web:</label>
+      <input type="text" id="idWeb" />
+      <input type="submit" value="Agregar" />
+    </form>
+    <button onclick="goTo('admin')">Cancelar</button>
+    <div id="newMsg"></div>
+  `;
+
+  $("newForm").onsubmit = e => {
+    e.preventDefault();
+    agregarTransmisor();
+  };
+}
+
+// --------- Funciones Firebase ---------
+
+function login() {
+  const email = $("email").value.trim();
+  const pass = $("password").value;
+
+  auth.signInWithEmailAndPassword(email, pass)
+    .then(() => {
+      currentUser = auth.currentUser;
+      setNav();
+      goTo("admin");
+    })
+    .catch((error) => {
+      $("loginMsg").innerHTML = `<p class="error">Error: ${error.message}</p>`;
+    });
+}
+
+function logout() {
+  auth.signOut().then(() => {
+    currentUser = null;
+    setNav();
+    goTo("home");
+  });
+}
+
+function fetchEstadoSistema() {
+  db.ref("/").on("value", (snapshot) => {
+    const data = snapshot.val();
+    salidaActiva = data.relay1 || false;
+    ultimoNombre = data.ultimoNombre || "";
+    ultimaDireccion = data.ultimaDireccion || "";
+    transmisores = data.transmisores || {};
+    if ($("estadoSalida")) $("estadoSalida").innerText = salidaActiva ? "ACTIVADA" : "DESACTIVADA";
+  });
+}
+
+function activarSalida(idWeb) {
+  const transmisorEncontrado = Object.values(transmisores).find(t => t.idWeb === idWeb);
+  if (!transmisorEncontrado) {
+    $("msgActivar").innerHTML = `<p class="error">ID Web no registrado.</p>`;
+    return;
+  }
+  // Cambiar estado salida en Firebase
+  const nuevoEstado = !salidaActiva;
+  db.ref("/relay1").set(nuevoEstado);
+  db.ref("/ultimoNombre").set(transmisorEncontrado.nombre);
+  db.ref("/ultimaDireccion").set(transmisorEncontrado.direccion);
+
+  $("msgActivar").innerHTML = `<p class="success">Salida ${nuevoEstado ? "ACTIVADA" : "DESACTIVADA"} correctamente.</p>`;
+}
+
+function borrarTransmisor(id) {
+  if (!confirm("¿Seguro que desea eliminar este transmisor?")) return;
+  db.ref("/transmisores/" + id).remove()
+    .then(() => {
+      showSuccess("Transmisor eliminado.");
+    })
+    .catch(err => {
+      showError("Error al eliminar transmisor: " + err.message);
+    });
+}
+
+function guardarEdicion(id) {
+  const nombre = $("nombre").value.trim();
+  const codigo = parseInt($("codigo").value.trim());
+  const direccion = $("direccion").value.trim();
+  const idWeb = $("idWeb").value.trim();
+
+  if (!nombre || isNaN(codigo) || !direccion) {
+    $("editMsg").innerHTML = `<p class="error">Complete todos los campos requeridos.</p>`;
+    return;
+  }
+
+  const updateData = { nombre, codigo, direccion, idWeb };
+
+  db.ref("/transmisores/" + id).set(updateData)
+    .then(() => {
+      showSuccess("Transmisor actualizado.");
+      setTimeout(() => goTo("admin"), 1000);
+    })
+    .catch(err => {
+      $("editMsg").innerHTML = `<p class="error">Error al guardar: ${err.message}</p>`;
+    });
+}
+
+function agregarTransmisor() {
+  const nombre = $("nombre").value.trim();
+  const codigo = parseInt($("codigo").value.trim());
+  const direccion = $("direccion").value.trim();
+  const idWeb = $("idWeb").value.trim();
+
+  if (!nombre || isNaN(codigo) || !direccion) {
+    $("newMsg").innerHTML = `<p class="error">Complete todos los campos requeridos.</p>`;
+    return;
+  }
+
+  // Generar nueva key para transmisor
+  const newKey = db.ref().child('transmisores').push().key;
+
+  db.ref("/transmisores/" + newKey).set({ nombre, codigo, direccion, idWeb })
+    .then(() => {
+      showSuccess("Transmisor agregado.");
+      setTimeout(() => goTo("admin"), 1000);
+    })
+    .catch(err => {
+      $("newMsg").innerHTML = `<p class="error">Error al agregar: ${err.message}</p>`;
+    });
+}
+
+// --------- Inicialización ---------
+
+auth.onAuthStateChanged(user => {
+  currentUser = user;
+  setNav();
+  renderPage();
+  fetchEstadoSistema();
+});
+
+// Primera carga
+setNav();
+renderPage();
+
+</script>
+
+</body>
+</html>
